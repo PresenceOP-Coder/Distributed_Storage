@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DistributedDrive Upload Tester</title>
+    <style>
+        :root {
+            --bg: #f7f3ea;
+            --card: #fffdf8;
+            --ink: #1e1f1c;
+            --accent: #0f766e;
+            --accent-2: #14532d;
+            --muted: #6b6f68;
+            --border: #d7d2c5;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(800px 400px at 0% 0%, #e9f7ef 0%, transparent 60%),
+                radial-gradient(700px 400px at 100% 100%, #e0f2fe 0%, transparent 60%),
+                var(--bg);
+            padding: 24px;
+        }
+
+        .card {
+            width: min(680px, 100%);
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 20px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+        }
+
+        h1 {
+            margin: 0 0 12px;
+            font-size: 1.4rem;
+        }
+
+        p {
+            margin: 0 0 16px;
+            color: var(--muted);
+        }
+
+        label {
+            display: block;
+            margin: 12px 0 6px;
+            font-weight: 600;
+        }
+
+        input[type="url"],
+        input[type="file"] {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 12px;
+            background: #fff;
+        }
+
+        button {
+            margin-top: 16px;
+            border: 0;
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: white;
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .result {
+            margin-top: 16px;
+            border: 1px dashed var(--border);
+            border-radius: 10px;
+            padding: 12px;
+            white-space: pre-wrap;
+            background: #faf9f6;
+            min-height: 54px;
+            color: #111827;
+        }
+
+        .ok {
+            border-color: #16a34a;
+        }
+
+        .bad {
+            border-color: #dc2626;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="card">
+        <h1>Backend Upload Tester</h1>
+        <p>Start the Go server first, then upload any file. This sends form field <strong>myfile</strong> to your
+            backend.</p>
+
+        <form id="uploadForm">
+            <label for="endpoint">Upload endpoint</label>
+            <input id="endpoint" type="url" value="http://localhost:8002/upload" required />
+
+            <label for="fileInput">Choose file</label>
+            <input id="fileInput" type="file" required />
+
+            <button type="submit">Upload and Test</button>
+        </form>
+
+        <div id="result" class="result">Waiting for upload...</div>
+    </main>
+
+    <script>
+        const form = document.getElementById("uploadForm");
+        const fileInput = document.getElementById("fileInput");
+        const endpointInput = document.getElementById("endpoint");
+        const result = document.getElementById("result");
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            result.classList.remove("ok", "bad");
+
+            const file = fileInput.files[0];
+            if (!file) {
+                result.textContent = "Pick a file first.";
+                result.classList.add("bad");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("myfile", file);
+
+            result.textContent = "Uploading...";
+
+            try {
+                const response = await fetch(endpointInput.value, {
+                    method: "POST",
+                    body: formData
+                });
+
+                const text = await response.text();
+                result.textContent = "Status: " + response.status + "\n" + text;
+
+                if (response.ok) {
+                    result.classList.add("ok");
+                } else {
+                    result.classList.add("bad");
+                }
+            } catch (error) {
+                result.textContent = "Request failed: " + error.message;
+                result.classList.add("bad");
+            }
+        });
+    </script>
+</body>
+
+</html>
