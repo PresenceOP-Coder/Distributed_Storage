@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -11,27 +12,43 @@ import (
 	"path/filepath"
 	"time"
 )
+
 var nodes = []string{
 	"http://localhost:8001",
 	"http://localhost:8002",
 	"http://localhost:8003",
 }
+
+type ChunkInfo struct {
+	ID   int    `json:"id"`
+	Node string `json:"node"`
+}
+type Metadata struct {
+	FileName    string      `json:"filename"`
+	TotalChunks int         `json:"totalChunks"`
+	Chunks      []ChunkInfo `json:"chunks"`
+}
+
 const chunkSize = 1024 * 1024
 
-func splitAndDistribute(filePath, fileID string) (int, error) {
+func splitAndDistribute(filePath, fileID string) (Metadata, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return 0, err
+		return Metadata{}, err
 	}
 	defer file.Close()
 
 	buffer := make([]byte, chunkSize)
 	chunkIndex := 0
 
+	meta := Metadata{
+		FileName: filepath.Base(filePath),
+	}
+
 	for {
 		n, readErr := file.Read(buffer)
 		if readErr != nil && readErr != io.EOF {
-			return 0, readErr
+			return meta, readErr
 		}
 		if n == 0 {
 			break
@@ -39,22 +56,29 @@ func splitAndDistribute(filePath, fileID string) (int, error) {
 
 		node := nodes[chunkIndex%len(nodes)]
 		chunkName := fmt.Sprintf("%s_%d.chunk", fileID, chunkIndex)
+
 		sendErr := sendChunkToNode(node, chunkName, buffer[:n])
-		if sendErr != nil{
-			return 0,sendErr
+		if sendErr != nil {
+			return meta, sendErr
 		}
+		meta.Chunks = append(meta.Chunks, ChunkInfo{
+			ID:   chunkIndex,
+			Node: node,
+		})
 		chunkIndex++
 
-		if readErr == io.EOF{
+		if readErr == io.EOF {
 			break
 		}
 	}
-	return chunkIndex, nil
+	meta.TotalChunks = chunkIndex
+	return meta, nil
 
 }
-func fetchChunk(nodeURL, chunkName string)([]byte, error){
+
+func fetchChunk(nodeURL, chunkName string) ([]byte, error) {
 	resp, err := http.Get(nodeURL + "/chunk?name=" + chunkName)
-	if err != nil{
+	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -63,18 +87,18 @@ func fetchChunk(nodeURL, chunkName string)([]byte, error){
 	}
 	return io.ReadAll(resp.Body)
 }
-func mergeDistributed(outputFile string , totalChunks int, fileID string) error{
+func mergeDistributed(outputFile string, totalChunks int, fileID string) error {
 	out, err := os.Create(outputFile)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	for i:= 0 ; i<totalChunks; i++{
+	for i := 0; i < totalChunks; i++ {
 		node := nodes[i%len(nodes)]
 		chunkName := fmt.Sprintf("%s_%d.chunk", fileID, i)
 
 		data, err := fetchChunk(node, chunkName)
-		if err != nil{
+		if err != nil {
 			return err
 		}
 		out.Write(data)
@@ -82,41 +106,41 @@ func mergeDistributed(outputFile string , totalChunks int, fileID string) error{
 	}
 	return nil
 }
-func storeChunk(w http.ResponseWriter, r *http.Request){
-	if r.Method != http.MethodPost{
-		http.Error(w, "Only post allowed",http.StatusMethodNotAllowed)
+func storeChunk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only post allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	file , header , err := r.FormFile("chunk")
+	file, header, err := r.FormFile("chunk")
 	if err != nil {
-		http.Error(w,"Invalid Check",http.StatusBadRequest)
+		http.Error(w, "Invalid Check", http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
 
-	os.MkdirAll("data",os.ModePerm)
-	path := filepath.Join("data",header.Filename)
+	os.MkdirAll("data", os.ModePerm)
+	path := filepath.Join("data", header.Filename)
 	dst, err := os.Create(path)
 
-	if err != nil{
-		http.Error(w,"Cannot Save Chunk",http.StatusInternalServerError)
+	if err != nil {
+		http.Error(w, "Cannot Save Chunk", http.StatusInternalServerError)
 		return
 	}
 	defer dst.Close()
 
-	io.Copy(dst,file)
+	io.Copy(dst, file)
 	fmt.Println("Stored:", header.Filename)
 	w.Write([]byte("OK"))
 }
-func getChunk(w http.ResponseWriter, r *http.Request){
+func getChunk(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
-	if name == ""{
-		http.Error(w,"Missing Name",  http.StatusBadRequest)
+	if name == "" {
+		http.Error(w, "Missing Name", http.StatusBadRequest)
 		return
 	}
 	path := filepath.Join("data", filepath.Base(name))
-	http.ServeFile(w,r,path)
+	http.ServeFile(w, r, path)
 }
 func mergeChunks(outputFile string, totalChunks int) error {
 	outFile, err := os.Create(outputFile)
@@ -189,13 +213,18 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	fileID := fmt.Sprintf("%d", time.Now().UnixNano())
 
-	totalChunks, err := splitAndDistribute(dstPath, fileID)
+	meta, err := splitAndDistribute(dstPath, fileID)
 
 	if err != nil {
-		http.Error(w, "Could not split uploaded file", http.StatusInternalServerError)
+		http.Error(w, "Could not split uploaded file", 500)
 		return
 	}
-	err = mergeDistributed("reconstructed.mp4", totalChunks, fileID)
+	err = saveMetadata(fileID, meta)
+	if err != nil {
+		http.Error(w, "Metadata save failed", 500)
+		return
+	}
+	err = mergeDistributed("reconstructed.mp4", meta.TotalChunks, fileID)
 	if err != nil {
 		http.Error(w, "Could not reconstruct distributed file", http.StatusInternalServerError)
 		return
@@ -203,39 +232,57 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Uploaded : %s", header.Filename)
 
 }
-func downloadHandler(w http.ResponseWriter, r *http.Request) {
-	fileName := r.URL.Query().Get("file")
 
-	if fileName == "" {
-		http.Error(w, "Plz give a file name", http.StatusBadRequest)
+func downloadUsingMetadata(w http.ResponseWriter, fileID string) error {
+	meta, err := loadMetadata(fileID)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename="+meta.FileName)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	for _, chunk := range meta.Chunks {
+		chunkName := fmt.Sprintf("%s_%d", fileID, chunk.ID)
+
+		data, err := fetchChunk(chunk.Node, chunkName)
+		if err != nil {
+			return err
+		}
+		w.Write(data)
+	}
+	return nil
+}
+func downloadHandler(w http.ResponseWriter, r *http.Request) {
+	fileID := r.URL.Query().Get("file")
+
+	if fileID == "" {
+		http.Error(w, "Plz give a file name", 400)
 		return
 	}
-
-	filePath := "./reconstructed.mp4"
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fileName))
-	w.Header().Set("Content-Type", "application/octet-stream")
-
-	http.ServeFile(w, r, filePath)
+	err := downloadUsingMetadata(w, fileID)
+	if err != nil {
+		http.Error(w, "Download failed", 500)
+		return
+	}
 }
 
-func sendChunkToNode(nodeURL, fileName string, data[]byte) error{
+func sendChunkToNode(nodeURL, fileName string, data []byte) error {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	part, err := writer.CreateFormFile("chunk",fileName)
-	if err != nil{
+	part, err := writer.CreateFormFile("chunk", fileName)
+	if err != nil {
 		return err
 	}
 	part.Write(data)
 	writer.Close()
 
-	req, err := http.NewRequest("POST",nodeURL+"/store",&body)
+	req, err := http.NewRequest("POST", nodeURL+"/store", &body)
 
-	if err != nil{
+	if err != nil {
 		return err
 	}
 
-	req.Header.Set("Content-Type",writer.FormDataContentType())
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -246,8 +293,36 @@ func sendChunkToNode(nodeURL, fileName string, data[]byte) error{
 		return fmt.Errorf("failed to store %s on %s: status %d", fileName, nodeURL, resp.StatusCode)
 	}
 
-	fmt.Println("Sent to:",nodeURL ,fileName)
+	fmt.Println("Sent to:", nodeURL, fileName)
 	return nil
+}
+
+func saveMetadata(fileID string, meta Metadata) error {
+	os.MkdirAll("metadata", os.ModePerm)
+	path := fmt.Sprintf("metadata/%s.json", fileID)
+
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	encoder := json.NewEncoder(file)
+	return encoder.Encode(meta)
+}
+func loadMetadata(fileID string) (Metadata, error) {
+	var meta Metadata
+
+	path := fmt.Sprintf("metadata/%s.json", fileID)
+
+	file, err := os.Open(path)
+	if err != nil {
+		return meta, err
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&meta)
+	return meta, err
 }
 func main() {
 	http.HandleFunc("/upload", uploadHandler)
