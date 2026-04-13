@@ -1,22 +1,14 @@
-# Binaries
+# Go build/test outputs
 *.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# Go test binary and coverage
 *.test
 *.out
 coverage.out
 
-# Build output
-/bin/
-/dist/
-
-# Runtime/generated project data
-/data/
-/upload/
+# Backend runtime/generated data
+/backend/data/
+/backend/upload/
+/backend/metadata/
+/backend/reconstructed.mp4
 
 # Logs
 *.log
@@ -28,4 +20,6 @@ coverage.out
 # OS files
 .DS_Store
 Thumbs.db
-test-client/
+
+# Local frontend workspace
+/test-client/
